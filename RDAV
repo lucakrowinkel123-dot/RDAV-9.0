@@ -624,6 +624,7 @@
           public Vector3D Location;
           public Vector3D Velocity;
           public Color RenderColour;
+          public bool IsMissile;
       }
 
       public struct RuntimeAgs
@@ -663,9 +664,16 @@
               {
                   Vector2 Squarelocation, Squarepointpos;
                   ProjectToPlane(args.ReferenceLocation, args.ReferenceForwards, args.ReferenceUpwards, item.Location, item.Velocity, out Squarelocation, out Squarepointpos);
-                  renderableSprites.Add(DrawRectangle_FromCntr(Squarelocation, 0.025f, 0.025f, item.RenderColour, true));
-                  renderableSprites.Add(DrawLine(Squarelocation, Squarepointpos, 0.005f, item.RenderColour));
-                  renderableSprites.Add(DrawText(item.Velocity.Length().ToString("F1"), Squarelocation + new Vector2(0.02f, -0.04f), item.RenderColour, 0.5f, TextAlignment.LEFT));
+                  if (item.IsMissile)
+                  {
+                      renderableSprites.Add(DrawCircle(Squarelocation, 0.007f, item.RenderColour, true));
+                  }
+                  else
+                  {
+                      renderableSprites.Add(DrawRectangle_FromCntr(Squarelocation, 0.025f, 0.025f, item.RenderColour, true));
+                      renderableSprites.Add(DrawLine(Squarelocation, Squarepointpos, 0.005f, item.RenderColour));
+                      renderableSprites.Add(DrawText(item.Velocity.Length().ToString("F1"), Squarelocation + new Vector2(0.02f, -0.04f), item.RenderColour, 0.5f, TextAlignment.LEFT));
+                  }
               }
 
               //Renders Information GUI
@@ -1559,7 +1567,8 @@
                   TrackingDisplay.TargetInfo targetInfo = new TrackingDisplay.TargetInfo();
                   targetInfo.RenderColour = Color.RoyalBlue;
                   targetInfo.Location = missile.WorldLocation;
-                  targetInfo.Velocity = missile.WorldVelocity * 30;
+                  targetInfo.Velocity = missile.WorldVelocity;
+                  targetInfo.IsMissile = true;
 
                   runtimeAgs.ToDisplay.Add(targetInfo);
               }
@@ -1571,7 +1580,8 @@
                   TrackingDisplay.TargetInfo targetInfo = new TrackingDisplay.TargetInfo();
                   targetInfo.RenderColour = Color.Red;
                   targetInfo.Location = TrackedTargetLocation;
-                  targetInfo.Velocity = TrackedTargetVelocity * 30;
+                  targetInfo.Velocity = (ExternalFeedActive && ExternalFeedHasTarget) ? TrackedTargetVelocity : TrackedTargetVelocity * 60;
+                  targetInfo.IsMissile = false;
 
                   runtimeAgs.ToDisplay.Add(targetInfo);
               }
