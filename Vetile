@@ -34,6 +34,7 @@ const bool ENABLE_LEGACY_DIRECT_RDAV_PUSH = false;
 const double REMOTE_TARGET_STALE_SECONDS = 2.0;
 const string RDAV_STATUS_NONE = "NO_TARGET";
 const string SOURCE_ID_KEY = "SourceId";
+const int TARGET_UPDATE_EVERY_TICKS = 1; //Update target forwarding every N script ticks (1 = every run)
 
 enum ControllerState
 {
@@ -134,6 +135,7 @@ double activeTargetDistanceMeters = -1;
 string configuredSourceId = "local";
 double remoteSettingBroadcastTimer;
 const double REMOTE_SETTING_BROADCAST_SECONDS = 1.0;
+int targetUpdateTickCounter;
 
 public Program()
 {
@@ -237,7 +239,12 @@ public void Main(string argument, UpdateType updateSource)
     }
 
     PollScoutMessages();
-    ResolveAndForwardTarget();
+    targetUpdateTickCounter++;
+    if (targetUpdateTickCounter >= Math.Max(1, TARGET_UPDATE_EVERY_TICKS))
+    {
+        targetUpdateTickCounter = 0;
+        ResolveAndForwardTarget();
+    }
 
     foreach (var kv in channels)
         UpdateChannel(kv.Value);
