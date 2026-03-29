@@ -29,9 +29,12 @@ const string TARGET_PACKET_HEADER = "VTARGET";
 const string TARGET_PACKET_VERSION = "1";
 const string IGC_SCOUT_CHANNEL = "VETILE_SCOUT_TARGET";
 const string IGC_SCOUT_CONTROL_CHANNEL = "VETILE_SCOUT_CONTROL";
+const string IGC_RDAV_TARGET_CHANNEL = "VETILE_RDAV_TARGET";
+const bool ENABLE_LEGACY_DIRECT_RDAV_PUSH = false;
 const double REMOTE_TARGET_STALE_SECONDS = 2.0;
 const string RDAV_STATUS_NONE = "NO_TARGET";
 const string SOURCE_ID_KEY = "SourceId";
+const int TARGET_UPDATE_EVERY_TICKS = 1; //Update target forwarding every N script ticks (1 = every run)
 
 enum ControllerState
 {
@@ -132,6 +135,7 @@ double activeTargetDistanceMeters = -1;
 string configuredSourceId = "local";
 double remoteSettingBroadcastTimer;
 const double REMOTE_SETTING_BROADCAST_SECONDS = 1.0;
+int targetUpdateTickCounter;
 
 public Program()
 {
@@ -235,7 +239,12 @@ public void Main(string argument, UpdateType updateSource)
     }
 
     PollScoutMessages();
-    ResolveAndForwardTarget();
+    targetUpdateTickCounter++;
+    if (targetUpdateTickCounter >= Math.Max(1, TARGET_UPDATE_EVERY_TICKS))
+    {
+        targetUpdateTickCounter = 0;
+        ResolveAndForwardTarget();
+    }
 
     foreach (var kv in channels)
         UpdateChannel(kv.Value);
@@ -1034,6 +1043,11 @@ void ResolveAndForwardTarget()
     activeTargetDistanceMeters = packet.HasTarget ? Vector3D.Distance(Me.GetPosition(), packet.TargetPosition) : -1;
 
     string encoded = EncodeTargetPacket(packet);
+    IGC.SendBroadcastMessage(IGC_RDAV_TARGET_CHANNEL, encoded, TransmissionDistance.TransmissionDistanceMax);
+
+    if (!ENABLE_LEGACY_DIRECT_RDAV_PUSH)
+        return;
+
     for (int i = 0; i < TAGS.Length; i++)
     {
         var ch = channels[TAGS[i]];
@@ -1385,6 +1399,7 @@ double NormalizeToMinusPiToPi(double radians)
 void EchoSummary()
 {
     Echo("Rotor Projection Finisher (Multi-Tag)");
+    Echo($"Runtime (Vetile): {Runtime.LastRunTimeMs:0.###} ms");
     Echo($"Target feed: {targetSourceMode} | source={activeTargetPacket.SourceName} | id={(activeTargetPacket.HasTarget ? activeTargetPacket.TargetId.ToString() : RDAV_STATUS_NONE)} | dist={(activeTargetDistanceMeters >= 0 ? activeTargetDistanceMeters.ToString("0") + "m" : "-")}");
     Echo($"Target profile: Priority={globalTargetMode} | System={globalTargetSubsystemMode}");
     Echo($"Remote selection: {(remoteSourceOrder.Count > 0 ? GetSelectedRemoteNameOrDefault() : "none")} ({remoteSourceOrder.Count} known)");
