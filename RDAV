@@ -73,6 +73,7 @@
   int GuiRefreshCounter = 0;
   const int GuiRefreshIntervalTicks = 15; //redraw every other tick to reduce UI overhead
   const string ExternalTargetPacketHeader = "VTARGET";
+  const string ExternalTargetIgcChannel = "VETILE_RDAV_TARGET";
   bool ExternalFeedActive = false;
   bool ExternalFeedHasTarget = false;
   Vector3D ExternalTargetPosition = Vector3D.Zero;
@@ -84,6 +85,7 @@
   long ExternalTargetId = 0;
   long ExternalFeedLastSeenTick = 0;
   const long ExternalFeedTimeoutTicks = 180; //3 seconds at Update1
+  IMyBroadcastListener ExternalTargetListener;
 
   //Shipside Required Blocks For Functionality
   RadarTrackingModule ThisTracker;
@@ -1200,6 +1202,7 @@
 
       //Sets Runtime
       Runtime.UpdateFrequency = UpdateFrequency.Update1;
+      ExternalTargetListener = IGC.RegisterBroadcastListener(ExternalTargetIgcChannel);
 
       //Setup String
       string SetupString = "Rdavs Guided Missile Script Basic Setup \n================================================== \n \n \nSystem Setup \n=================== \n \nTo Set Up The Ship: \n------------------------ \n- Put this Code Into a P-block \n- Install a light block (optional) \n- Install an Offensive combat block & Flight Block called #A#  \n- Recompile if prompted to 'reset' \n- To fire from the toolbar 'run' this Pb with \n  the argument 'Fire'";
@@ -1316,6 +1319,25 @@
       return true;
   }
 
+  bool TryApplyExternalTargetFromIgc()
+  {
+      if (ExternalTargetListener == null)
+      { return false; }
+
+      bool applied = false;
+      while (ExternalTargetListener.HasPendingMessage)
+      {
+          var message = ExternalTargetListener.AcceptMessage();
+          string payload = message.Data as string;
+          if (string.IsNullOrWhiteSpace(payload))
+          { continue; }
+
+          if (TryApplyExternalTargetPacket(payload))
+          { applied = true; }
+      }
+      return applied;
+  }
+
   void GetYawOnlyRadarFrame(IMyShipController controller, Vector3D forwardHint, out Vector3D radarForward, out Vector3D radarUp)
   {
       radarForward = controller.WorldMatrix.Forward;
@@ -1352,6 +1374,8 @@
   {
       if (TryApplyExternalTargetPacket(argument))
       { return; }
+
+      TryApplyExternalTargetFromIgc();
 
       //Ifdebug
       //debug.RemoveDraw();
