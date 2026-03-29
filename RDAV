@@ -51,9 +51,9 @@
   const bool UseDefaultTargeting = false; // set this to true to enable 'default' targeting subsystems by default
   const bool RenameCockpit = true; //Renames the cockpit the script uses to help  diagnose issues
   const int MissileLCD = 0; //LCD in the cockpit to use (keep this 0 unless you want it on a different screen)
-  const int GravityAggressiveness = 5; //Alter this (0.5 - 4) to change how aggressive gravity counteraction is, good for firing at ground targets.
+  int GravityAggressiveness = 5; //Auto-selected from PB tag: #A#=5, #B#=6, #C#=7, #D#=8
 
-  bool Autoconnect = false;//Automatically connects missile connectors so its easier to use in survival
+  bool Autoconnect = true;//Automatically connects missile connectors so its easier to use in survival
   bool OnlyUseBlocksOnSameConstruct = false; //Use this to force script to only use same construct blocks (ie ignore connector docked stuff)
   bool OrderedLaunching = false; //script will automatically launch ordered via name, (the order they appear in the terminal) use #A# 001, #A# 002, ...., #A# 099
 
@@ -73,6 +73,7 @@
   int GuiRefreshCounter = 0;
   const int GuiRefreshIntervalTicks = 15; //redraw every other tick to reduce UI overhead
   const string ExternalTargetPacketHeader = "VTARGET";
+  const string ExternalTargetIgcChannel = "VETILE_RDAV_TARGET";
   bool ExternalFeedActive = false;
   bool ExternalFeedHasTarget = false;
   Vector3D ExternalTargetPosition = Vector3D.Zero;
@@ -84,6 +85,7 @@
   long ExternalTargetId = 0;
   long ExternalFeedLastSeenTick = 0;
   const long ExternalFeedTimeoutTicks = 180; //3 seconds at Update1
+  IMyBroadcastListener ExternalTargetListener;
 
   //Shipside Required Blocks For Functionality
   RadarTrackingModule ThisTracker;
@@ -575,20 +577,29 @@
       }
 
       //Projecting Code
-      public void ProjectToPlane(MatrixD WorldToLocalSpace, Vector3D Location, Vector3D Velocity, out Vector2 LocationScreenspace, out Vector2 velocityindicatorlocationSceenspace)
+      public void ProjectToPlane(Vector3D referenceLocation, Vector3D referenceForward, Vector3D referenceUp, Vector3D Location, Vector3D Velocity, out Vector2 LocationScreenspace, out Vector2 velocityindicatorlocationSceenspace)
       {
           const float pixelsPerMeter = 0.5f * 0.16f;
           const float screenUnitsPerMeter = pixelsPerMeter / 512.0f;
           Vector2 RadarCenter = new Vector2(0.5f, 0.5f) + new Vector2(0, -16) / 512.0f; //16 pixels up
 
-          // Correct transformation for position (apply translation)
-          Vector3D localPos = Vector3D.Transform(Location, WorldToLocalSpace);
+          Vector3D radarForward = referenceForward.LengthSquared() > 0.0001 ? Vector3D.Normalize(referenceForward) : Vector3D.Forward;
+          Vector3D radarUp = referenceUp.LengthSquared() > 0.0001 ? Vector3D.Normalize(referenceUp) : Vector3D.Up;
+          Vector3D radarRight = Vector3D.Cross(radarForward, radarUp);
+          if (radarRight.LengthSquared() < 0.0001)
+          {
+              radarRight = Vector3D.Cross(Vector3D.Forward, radarUp);
+          }
+          radarRight = Vector3D.Normalize(radarRight);
 
-          // Convert to screen space (XY plane)
-          LocationScreenspace = RadarCenter + new Vector2((float)localPos.X, (float)localPos.Z) * screenUnitsPerMeter;
+          Vector3D relative = Location - referenceLocation;
+          float localX = (float)Vector3D.Dot(relative, radarRight);
+          float localZ = (float)Vector3D.Dot(relative, radarForward);
+          LocationScreenspace = RadarCenter + new Vector2(localX, -localZ) * screenUnitsPerMeter;
 
-          // Transform velocity correctly as a direction
-          Vector3D localVelocity = Vector3D.TransformNormal(Velocity, WorldToLocalSpace);
+          float velocityX = (float)Vector3D.Dot(Velocity, radarRight);
+          float velocityZ = (float)Vector3D.Dot(Velocity, radarForward);
+          Vector3D localVelocity = new Vector3D(velocityX, 0, velocityZ);
 
           // Create direction marker (small offset)
           //velocityindicatorlocationSceenspace = LocationScreenspace + new Vector2((float)localVelocity.X, (float)localVelocity.Z) * screenUnitsPerMeter*4;
@@ -596,7 +607,7 @@
           {
               localVelocity = Vector3D.Normalize(localVelocity);
           }
-          velocityindicatorlocationSceenspace = LocationScreenspace + new Vector2((float)localVelocity.X, (float)localVelocity.Z) * 0.05f;
+          velocityindicatorlocationSceenspace = LocationScreenspace + new Vector2((float)localVelocity.X, -(float)localVelocity.Z) * 0.05f;
 
       }
 
@@ -613,6 +624,7 @@
           public Vector3D Location;
           public Vector3D Velocity;
           public Color RenderColour;
+          public bool IsMissile;
       }
 
       public struct RuntimeAgs
@@ -647,25 +659,28 @@
               renderableSprites.AddRange(DrawRuntimeUI(new Vector2(0.5f, 0.5f), sweepAngle));
               renderableSprites.AddRange(DrawFixedUI(new Vector2(0.5f, 0.5f)));
 
-              //Generates The Reference Frame
-              MatrixD viewMatrix = MatrixD.CreateWorld(args.ReferenceLocation, args.ReferenceForwards, args.ReferenceUpwards);
-              MatrixD viewInv = MatrixD.Invert(viewMatrix); //world to reference frame
-
               //Renders All Tracked Points
               foreach (var item in args.ToDisplay)
               {
                   Vector2 Squarelocation, Squarepointpos;
-                  ProjectToPlane(viewInv, item.Location, item.Velocity, out Squarelocation, out Squarepointpos);
-                  renderableSprites.Add(DrawRectangle_FromCntr(Squarelocation, 0.025f, 0.025f, item.RenderColour, true));
-                  renderableSprites.Add(DrawLine(Squarelocation, Squarepointpos, 0.005f, item.RenderColour));
-                  renderableSprites.Add(DrawText(item.Velocity.Length().ToString("F1"), Squarelocation + new Vector2(0.02f, -0.04f), item.RenderColour, 0.5f, TextAlignment.LEFT));
+                  ProjectToPlane(args.ReferenceLocation, args.ReferenceForwards, args.ReferenceUpwards, item.Location, item.Velocity, out Squarelocation, out Squarepointpos);
+                  if (item.IsMissile)
+                  {
+                      renderableSprites.Add(DrawCircle(Squarelocation, 0.007f, item.RenderColour, true));
+                  }
+                  else
+                  {
+                      renderableSprites.Add(DrawRectangle_FromCntr(Squarelocation, 0.025f, 0.025f, item.RenderColour, true));
+                      renderableSprites.Add(DrawLine(Squarelocation, Squarepointpos, 0.005f, item.RenderColour));
+                      renderableSprites.Add(DrawText(item.Velocity.Length().ToString("F1"), Squarelocation + new Vector2(0.02f, -0.04f), item.RenderColour, 0.5f, TextAlignment.LEFT));
+                  }
               }
 
               //Renders Information GUI
               if (args.DrawReferenceMarker)
               {
                   Vector2 sourcelocation, sourcepointpos;
-                  ProjectToPlane(viewInv, args.ReferenceMarkerLocation, Vector3D.Zero, out sourcelocation, out sourcepointpos);
+                  ProjectToPlane(args.ReferenceLocation, args.ReferenceForwards, args.ReferenceUpwards, args.ReferenceMarkerLocation, Vector3D.Zero, out sourcelocation, out sourcepointpos);
                   Vector2 radarCenter = new Vector2(0.5f, 0.5f) + new Vector2(0, -16) / 512.0f;
                   const float radarRadius = 200f / 512f;
                   Vector2 sourceOffset = sourcelocation - radarCenter;
@@ -1050,7 +1065,13 @@
           //-----------------------------------------------
 
           //Guides To Target Using Gyros
-          am = Vector3D.Normalize(LateralAccelerationComponent - GravityDirectionAndMagnitude * GravityAggressiveness); 
+          int gravityAggressiveness = 5;
+          Program hostProgram = Program_local as Program;
+          if (hostProgram != null)
+          {
+              gravityAggressiveness = hostProgram.GravityAggressiveness;
+          }
+          am = Vector3D.Normalize(LateralAccelerationComponent - GravityDirectionAndMagnitude * gravityAggressiveness); 
           double Yaw; double Pitch;
           GyroTurn6(am, 18, 0.3, THRUSTERS[0], GYRO as IMyGyro, PREV_Yaw, PREV_Pitch, out Pitch, out Yaw);
 
@@ -1195,9 +1216,11 @@
 
       //Sets Runtime
       Runtime.UpdateFrequency = UpdateFrequency.Update1;
+      ExternalTargetListener = IGC.RegisterBroadcastListener(ExternalTargetIgcChannel);
+      ApplyTagSettingsFromProgrammableBlockName();
 
       //Setup String
-      string SetupString = "Rdavs Guided Missile Script Basic Setup \n================================================== \n \n \nSystem Setup \n=================== \n \nTo Set Up The Ship: \n------------------------ \n- Put this Code Into a P-block \n- Install a light block (optional) \n- Install an Offensive combat block & Flight Block called #A#  \n- Recompile if prompted to 'reset' \n- To fire from the toolbar 'run' this Pb with \n  the argument 'Fire'";
+      string SetupString = "Rdavs Guided Missile Script Basic Setup \n================================================== \n \n \nSystem Setup \n=================== \n \nTo Set Up The Ship: \n------------------------ \n- Put this Code Into a P-block \n- Name this PB with #A#/#B#/#C#/#D# (auto tag + gravity profile)\n- Install a light block (optional) \n- Install an Offensive combat block & Flight Block with the same tag as this PB\n- Recompile if prompted to 'reset' \n- To fire from the toolbar 'run' this Pb with \n  the argument 'Fire'";
       Me.CustomData = SetupString;
 
       if (OnlyUseBlocksOnSameConstruct)
@@ -1311,12 +1334,91 @@
       return true;
   }
 
+  void ApplyTagSettingsFromProgrammableBlockName()
+  {
+      string blockName = Me != null ? Me.CustomName : "";
+      if (blockName == null)
+      { blockName = ""; }
+
+      if (blockName.IndexOf("#D#", StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+          MissileTag = "#D#";
+          GravityAggressiveness = 8;
+      }
+      else if (blockName.IndexOf("#C#", StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+          MissileTag = "#C#";
+          GravityAggressiveness = 7;
+      }
+      else if (blockName.IndexOf("#B#", StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+          MissileTag = "#B#";
+          GravityAggressiveness = 6;
+      }
+      else
+      {
+          MissileTag = "#A#";
+          GravityAggressiveness = 5;
+      }
+  }
+
+  bool TryApplyExternalTargetFromIgc()
+  {
+      if (ExternalTargetListener == null)
+      { return false; }
+
+      bool applied = false;
+      while (ExternalTargetListener.HasPendingMessage)
+      {
+          var message = ExternalTargetListener.AcceptMessage();
+          string payload = message.Data as string;
+          if (string.IsNullOrWhiteSpace(payload))
+          { continue; }
+
+          if (TryApplyExternalTargetPacket(payload))
+          { applied = true; }
+      }
+      return applied;
+  }
+
+  void GetYawOnlyRadarFrame(IMyShipController controller, Vector3D forwardHint, out Vector3D radarForward, out Vector3D radarUp)
+  {
+      radarForward = controller.WorldMatrix.Forward;
+      radarUp = controller.WorldMatrix.Up;
+
+      Vector3D gravity = controller.GetNaturalGravity();
+      if (gravity.LengthSquared() < 0.0001)
+      {
+          if (forwardHint.LengthSquared() > 0.0001)
+          {
+              radarForward = Vector3D.Normalize(forwardHint);
+          }
+          return;
+      }
+
+      radarUp = -Vector3D.Normalize(gravity);
+
+      Vector3D baseForward = forwardHint.LengthSquared() > 0.0001 ? Vector3D.Normalize(forwardHint) : controller.WorldMatrix.Forward;
+      Vector3D forwardOnHorizon = baseForward - radarUp * Vector3D.Dot(baseForward, radarUp);
+      if (forwardOnHorizon.LengthSquared() < 0.0001)
+      {
+          forwardOnHorizon = controller.WorldMatrix.Up - radarUp * Vector3D.Dot(controller.WorldMatrix.Up, radarUp);
+      }
+
+      if (forwardOnHorizon.LengthSquared() >= 0.0001)
+      {
+          radarForward = Vector3D.Normalize(forwardOnHorizon);
+      }
+  }
+
   //Main Method
   #region Main Method
   void Main(string argument)
   {
       if (TryApplyExternalTargetPacket(argument))
       { return; }
+
+      TryApplyExternalTargetFromIgc();
 
       //Ifdebug
       //debug.RemoveDraw();
@@ -1440,9 +1542,13 @@
           GuiRefreshCounter = 0;
 
           TrackingDisplay.RuntimeAgs runtimeAgs = new TrackingDisplay.RuntimeAgs();
+          Vector3D forwardHint = ExternalFeedActive && ExternalSourceForward.LengthSquared() > 0.001 ? Vector3D.Normalize(ExternalSourceForward) : RC.WorldMatrix.Forward;
+          Vector3D localRadarForward, localRadarUp;
+          GetYawOnlyRadarFrame(RC, forwardHint, out localRadarForward, out localRadarUp);
+
           runtimeAgs.ReferenceLocation = ExternalFeedActive ? ExternalSourcePosition : RC.GetPosition();
-          runtimeAgs.ReferenceForwards = ExternalFeedActive && ExternalSourceForward.LengthSquared() > 0.001 ? Vector3D.Normalize(ExternalSourceForward) : RC.WorldMatrix.Forward;
-          runtimeAgs.ReferenceUpwards = ExternalFeedActive && ExternalSourceUp.LengthSquared() > 0.001 ? Vector3D.Normalize(ExternalSourceUp) : RC.WorldMatrix.Up;
+          runtimeAgs.ReferenceForwards = localRadarForward;
+          runtimeAgs.ReferenceUpwards = localRadarUp;
           runtimeAgs.ReferenceMarkerLocation = ExternalFeedActive ? RC.GetPosition() : runtimeAgs.ReferenceLocation;
           runtimeAgs.DrawReferenceMarker = true;
           runtimeAgs.TargetLock = HasTarget;
@@ -1461,22 +1567,24 @@
                   TrackingDisplay.TargetInfo targetInfo = new TrackingDisplay.TargetInfo();
                   targetInfo.RenderColour = Color.RoyalBlue;
                   targetInfo.Location = missile.WorldLocation;
-                  targetInfo.Velocity = missile.WorldVelocity * 30;
+                  targetInfo.Velocity = missile.WorldVelocity;
+                  targetInfo.IsMissile = true;
 
                   runtimeAgs.ToDisplay.Add(targetInfo);
               }
           }
 
           //Adds Target (If Tracking)
-          if (HasTarget)
-          {
-              TrackingDisplay.TargetInfo targetInfo = new TrackingDisplay.TargetInfo();
-              targetInfo.RenderColour = Color.Red;
-              targetInfo.Location = TrackedTargetLocation;
-              targetInfo.Velocity = TrackedTargetVelocity * 30;
+              if (HasTarget)
+              {
+                  TrackingDisplay.TargetInfo targetInfo = new TrackingDisplay.TargetInfo();
+                  targetInfo.RenderColour = Color.Red;
+                  targetInfo.Location = TrackedTargetLocation;
+                  targetInfo.Velocity = (ExternalFeedActive && ExternalFeedHasTarget) ? TrackedTargetVelocity : TrackedTargetVelocity * 60;
+                  targetInfo.IsMissile = false;
 
-              runtimeAgs.ToDisplay.Add(targetInfo);
-          }
+                  runtimeAgs.ToDisplay.Add(targetInfo);
+              }
 
           GUIPanel.DrawGUI(runtimeAgs);
       }
