@@ -51,7 +51,7 @@
   const bool UseDefaultTargeting = false; // set this to true to enable 'default' targeting subsystems by default
   const bool RenameCockpit = true; //Renames the cockpit the script uses to help  diagnose issues
   const int MissileLCD = 0; //LCD in the cockpit to use (keep this 0 unless you want it on a different screen)
-  static int GravityAggressiveness = 5; //Auto-selected from PB tag: #A#=5, #B#=6, #C#=7, #D#=8
+  int GravityAggressiveness = 5; //Auto-selected from PB tag: #A#=5, #B#=6, #C#=7, #D#=8
 
   bool Autoconnect = true;//Automatically connects missile connectors so its easier to use in survival
   bool OnlyUseBlocksOnSameConstruct = false; //Use this to force script to only use same construct blocks (ie ignore connector docked stuff)
@@ -1057,7 +1057,13 @@
           //-----------------------------------------------
 
           //Guides To Target Using Gyros
-          am = Vector3D.Normalize(LateralAccelerationComponent - GravityDirectionAndMagnitude * GravityAggressiveness); 
+          int gravityAggressiveness = 5;
+          Program hostProgram = Program_local as Program;
+          if (hostProgram != null)
+          {
+              gravityAggressiveness = hostProgram.GravityAggressiveness;
+          }
+          am = Vector3D.Normalize(LateralAccelerationComponent - GravityDirectionAndMagnitude * gravityAggressiveness); 
           double Yaw; double Pitch;
           GyroTurn6(am, 18, 0.3, THRUSTERS[0], GYRO as IMyGyro, PREV_Yaw, PREV_Pitch, out Pitch, out Yaw);
 
