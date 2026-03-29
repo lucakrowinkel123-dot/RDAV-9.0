@@ -39,6 +39,7 @@ const int TARGET_UPDATE_EVERY_TICKS = 1; //Update target forwarding every N scri
 const double TARGET_PREDICTION_SECONDS = 0.35; //Simple linear lead time
 const int LOCAL_FLIGHT_LOOKUP_EVERY_TICKS = 10; //Only re-scan local flight block every N script ticks
 const int IDLE_CHANNEL_UPDATE_EVERY_TICKS = 10; //Only update stable idle channels every N script ticks
+const int ECHO_UPDATE_EVERY_TICKS = 10; //Reduce terminal string churn
 
 enum ControllerState
 {
@@ -142,10 +143,12 @@ const double REMOTE_SETTING_BROADCAST_SECONDS = 1.0;
 int targetUpdateTickCounter;
 int localFlightLookupTickCounter;
 int idleChannelUpdateTickCounter;
+int echoUpdateTickCounter;
 bool hasLastResolvedTarget;
 Vector3D lastResolvedTargetPosition = Vector3D.Zero;
 double lastResolvedTargetSeenAt = -9999;
 IMyFlightMovementBlock cachedLocalFlight;
+List<IMyFlightMovementBlock> localFlightLookupBuffer = new List<IMyFlightMovementBlock>();
 
 public Program()
 {
@@ -252,6 +255,7 @@ public void Main(string argument, UpdateType updateSource)
     targetUpdateTickCounter++;
     localFlightLookupTickCounter++;
     idleChannelUpdateTickCounter++;
+    echoUpdateTickCounter++;
     if (targetUpdateTickCounter >= Math.Max(1, TARGET_UPDATE_EVERY_TICKS))
     {
         targetUpdateTickCounter = 0;
@@ -291,7 +295,11 @@ public void Main(string argument, UpdateType updateSource)
         AutoDetonateOutOfRangeWarheadsNextTag();
     }
 
-    EchoSummary();
+    if (echoUpdateTickCounter >= Math.Max(1, ECHO_UPDATE_EVERY_TICKS))
+    {
+        echoUpdateTickCounter = 0;
+        EchoSummary();
+    }
 
     summaryLcdTimer += Runtime.TimeSinceLastRun.TotalSeconds;
     if (summaryLcdTimer >= SUMMARY_LCD_UPDATE_SECONDS)
@@ -1131,9 +1139,9 @@ bool TryGetLocalPacket(out TargetPacket packet)
     if (localFlightInvalid || localFlightLookupTickCounter >= Math.Max(1, LOCAL_FLIGHT_LOOKUP_EVERY_TICKS))
     {
         localFlightLookupTickCounter = 0;
-        var flights = new List<IMyFlightMovementBlock>();
-        GridTerminalSystem.GetBlocksOfType(flights, b => NameHasTag(b.CustomName, SUMMARY_LCD_TAG));
-        cachedLocalFlight = flights.Count > 0 ? flights[0] : null;
+        localFlightLookupBuffer.Clear();
+        GridTerminalSystem.GetBlocksOfType(localFlightLookupBuffer, b => NameHasTag(b.CustomName, SUMMARY_LCD_TAG));
+        cachedLocalFlight = localFlightLookupBuffer.Count > 0 ? localFlightLookupBuffer[0] : null;
     }
 
     IMyFlightMovementBlock localFlight = cachedLocalFlight;
