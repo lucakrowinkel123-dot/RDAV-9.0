@@ -31,10 +31,12 @@ const string IGC_SCOUT_CHANNEL = "VETILE_SCOUT_TARGET";
 const string IGC_SCOUT_CONTROL_CHANNEL = "VETILE_SCOUT_CONTROL";
 const string IGC_RDAV_TARGET_CHANNEL = "VETILE_RDAV_TARGET";
 const bool ENABLE_LEGACY_DIRECT_RDAV_PUSH = false;
+const bool ENABLE_CONNECTOR_LOCKING = false; //Prefer RDAV autoconnect handling
 const double REMOTE_TARGET_STALE_SECONDS = 2.0;
 const string RDAV_STATUS_NONE = "NO_TARGET";
 const string SOURCE_ID_KEY = "SourceId";
 const int TARGET_UPDATE_EVERY_TICKS = 1; //Update target forwarding every N script ticks (1 = every run)
+const double TARGET_PREDICTION_SECONDS = 0.35; //Simple linear lead time
 
 enum ControllerState
 {
@@ -136,6 +138,9 @@ string configuredSourceId = "local";
 double remoteSettingBroadcastTimer;
 const double REMOTE_SETTING_BROADCAST_SECONDS = 1.0;
 int targetUpdateTickCounter;
+bool hasLastResolvedTarget;
+Vector3D lastResolvedTargetPosition = Vector3D.Zero;
+double lastResolvedTargetSeenAt = -9999;
 
 public Program()
 {
@@ -873,8 +878,15 @@ void BeginParkingState(TagChannel ch)
 
     if (!ch.ConnectorAttemptDone)
     {
-        RefreshTaggedConnectors(ch);
-        ch.ConnectorConnectedOnAttempt = LockTaggedConnectors(ch);
+        if (ENABLE_CONNECTOR_LOCKING)
+        {
+            RefreshTaggedConnectors(ch);
+            ch.ConnectorConnectedOnAttempt = LockTaggedConnectors(ch);
+        }
+        else
+        {
+            ch.ConnectorConnectedOnAttempt = 0;
+        }
         ch.ConnectorAttemptDone = true;
     }
 }
@@ -1037,6 +1049,30 @@ void ResolveAndForwardTarget()
     if (!hasPacket)
     {
         packet = BuildNoTargetPacket();
+    }
+
+    if (packet.HasTarget)
+    {
+        Vector3D measuredPosition = packet.TargetPosition;
+        Vector3D predictionVelocity = packet.TargetVelocity;
+        if (predictionVelocity.LengthSquared() < 0.01 && hasLastResolvedTarget)
+        {
+            double dt = elapsedSeconds - lastResolvedTargetSeenAt;
+            if (dt > 0.001)
+            {
+                predictionVelocity = (measuredPosition - lastResolvedTargetPosition) / dt;
+            }
+        }
+
+        packet.TargetVelocity = predictionVelocity;
+        packet.TargetPosition = measuredPosition + predictionVelocity * TARGET_PREDICTION_SECONDS;
+        hasLastResolvedTarget = true;
+        lastResolvedTargetPosition = measuredPosition;
+        lastResolvedTargetSeenAt = elapsedSeconds;
+    }
+    else
+    {
+        hasLastResolvedTarget = false;
     }
 
     activeTargetPacket = packet;

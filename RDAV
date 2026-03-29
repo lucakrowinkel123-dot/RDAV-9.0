@@ -53,7 +53,7 @@
   const int MissileLCD = 0; //LCD in the cockpit to use (keep this 0 unless you want it on a different screen)
   const int GravityAggressiveness = 5; //Alter this (0.5 - 4) to change how aggressive gravity counteraction is, good for firing at ground targets.
 
-  bool Autoconnect = false;//Automatically connects missile connectors so its easier to use in survival
+  bool Autoconnect = true;//Automatically connects missile connectors so its easier to use in survival
   bool OnlyUseBlocksOnSameConstruct = false; //Use this to force script to only use same construct blocks (ie ignore connector docked stuff)
   bool OrderedLaunching = false; //script will automatically launch ordered via name, (the order they appear in the terminal) use #A# 001, #A# 002, ...., #A# 099
 
