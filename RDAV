@@ -1311,6 +1311,29 @@
       return true;
   }
 
+  void GetGravityAlignedRadarFrame(IMyShipController controller, out Vector3D radarForward, out Vector3D radarUp)
+  {
+      radarForward = controller.WorldMatrix.Forward;
+      radarUp = controller.WorldMatrix.Up;
+
+      Vector3D gravity = controller.GetNaturalGravity();
+      if (gravity.LengthSquared() < 0.0001)
+      { return; }
+
+      radarUp = -Vector3D.Normalize(gravity);
+
+      Vector3D forwardOnHorizon = controller.WorldMatrix.Forward - radarUp * Vector3D.Dot(controller.WorldMatrix.Forward, radarUp);
+      if (forwardOnHorizon.LengthSquared() < 0.0001)
+      {
+          forwardOnHorizon = controller.WorldMatrix.Up - radarUp * Vector3D.Dot(controller.WorldMatrix.Up, radarUp);
+      }
+
+      if (forwardOnHorizon.LengthSquared() >= 0.0001)
+      {
+          radarForward = Vector3D.Normalize(forwardOnHorizon);
+      }
+  }
+
   //Main Method
   #region Main Method
   void Main(string argument)
@@ -1440,9 +1463,12 @@
           GuiRefreshCounter = 0;
 
           TrackingDisplay.RuntimeAgs runtimeAgs = new TrackingDisplay.RuntimeAgs();
+          Vector3D localRadarForward, localRadarUp;
+          GetGravityAlignedRadarFrame(RC, out localRadarForward, out localRadarUp);
+
           runtimeAgs.ReferenceLocation = ExternalFeedActive ? ExternalSourcePosition : RC.GetPosition();
-          runtimeAgs.ReferenceForwards = ExternalFeedActive && ExternalSourceForward.LengthSquared() > 0.001 ? Vector3D.Normalize(ExternalSourceForward) : RC.WorldMatrix.Forward;
-          runtimeAgs.ReferenceUpwards = ExternalFeedActive && ExternalSourceUp.LengthSquared() > 0.001 ? Vector3D.Normalize(ExternalSourceUp) : RC.WorldMatrix.Up;
+          runtimeAgs.ReferenceForwards = ExternalFeedActive && ExternalSourceForward.LengthSquared() > 0.001 ? Vector3D.Normalize(ExternalSourceForward) : localRadarForward;
+          runtimeAgs.ReferenceUpwards = ExternalFeedActive && ExternalSourceUp.LengthSquared() > 0.001 ? Vector3D.Normalize(ExternalSourceUp) : localRadarUp;
           runtimeAgs.ReferenceMarkerLocation = ExternalFeedActive ? RC.GetPosition() : runtimeAgs.ReferenceLocation;
           runtimeAgs.DrawReferenceMarker = true;
           runtimeAgs.TargetLock = HasTarget;
