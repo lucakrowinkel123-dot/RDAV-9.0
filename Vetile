@@ -37,6 +37,8 @@ const string RDAV_STATUS_NONE = "NO_TARGET";
 const string SOURCE_ID_KEY = "SourceId";
 const int TARGET_UPDATE_EVERY_TICKS = 1; //Update target forwarding every N script ticks (1 = every run)
 const double TARGET_PREDICTION_SECONDS = 0.35; //Simple linear lead time
+const int LOCAL_FLIGHT_LOOKUP_EVERY_TICKS = 10; //Only re-scan local flight block every N script ticks
+const int IDLE_CHANNEL_UPDATE_EVERY_TICKS = 10; //Only update stable idle channels every N script ticks
 
 enum ControllerState
 {
@@ -138,9 +140,12 @@ string configuredSourceId = "local";
 double remoteSettingBroadcastTimer;
 const double REMOTE_SETTING_BROADCAST_SECONDS = 1.0;
 int targetUpdateTickCounter;
+int localFlightLookupTickCounter;
+int idleChannelUpdateTickCounter;
 bool hasLastResolvedTarget;
 Vector3D lastResolvedTargetPosition = Vector3D.Zero;
 double lastResolvedTargetSeenAt = -9999;
+IMyFlightMovementBlock cachedLocalFlight;
 
 public Program()
 {
@@ -245,6 +250,8 @@ public void Main(string argument, UpdateType updateSource)
 
     PollScoutMessages();
     targetUpdateTickCounter++;
+    localFlightLookupTickCounter++;
+    idleChannelUpdateTickCounter++;
     if (targetUpdateTickCounter >= Math.Max(1, TARGET_UPDATE_EVERY_TICKS))
     {
         targetUpdateTickCounter = 0;
@@ -252,7 +259,19 @@ public void Main(string argument, UpdateType updateSource)
     }
 
     foreach (var kv in channels)
-        UpdateChannel(kv.Value);
+    {
+        bool shouldRun = true;
+        if (IsChannelStableIdle(kv.Value))
+        {
+            shouldRun = idleChannelUpdateTickCounter >= Math.Max(1, IDLE_CHANNEL_UPDATE_EVERY_TICKS);
+        }
+
+        if (shouldRun)
+            UpdateChannel(kv.Value);
+    }
+
+    if (idleChannelUpdateTickCounter >= Math.Max(1, IDLE_CHANNEL_UPDATE_EVERY_TICKS))
+        idleChannelUpdateTickCounter = 0;
 
     if (fireAllSequenceActive)
         ProcessFireAllSequence();
@@ -282,6 +301,15 @@ public void Main(string argument, UpdateType updateSource)
     }
 
     UpdateRuntimeFrequency();
+}
+
+bool IsChannelStableIdle(TagChannel ch)
+{
+    if (ch == null)
+        return false;
+    if (fireAllSequenceActive)
+        return false;
+    return ch.State == ControllerState.WaitingExact || ch.State == ControllerState.Parked;
 }
 
 void ForceStartAll()
@@ -1096,11 +1124,19 @@ bool TryGetLocalPacket(out TargetPacket packet)
 {
     packet = BuildNoTargetPacket();
 
-    IMyFlightMovementBlock localFlight = null;
-    var flights = new List<IMyFlightMovementBlock>();
-    GridTerminalSystem.GetBlocksOfType(flights, b => NameHasTag(b.CustomName, SUMMARY_LCD_TAG));
-    if (flights.Count > 0)
-        localFlight = flights[0];
+    bool localFlightInvalid = cachedLocalFlight == null || cachedLocalFlight.Closed || cachedLocalFlight.CubeGrid == null;
+    if (!localFlightInvalid && cachedLocalFlight.CubeGrid.GetCubeBlock(cachedLocalFlight.Position) == null)
+        localFlightInvalid = true;
+
+    if (localFlightInvalid || localFlightLookupTickCounter >= Math.Max(1, LOCAL_FLIGHT_LOOKUP_EVERY_TICKS))
+    {
+        localFlightLookupTickCounter = 0;
+        var flights = new List<IMyFlightMovementBlock>();
+        GridTerminalSystem.GetBlocksOfType(flights, b => NameHasTag(b.CustomName, SUMMARY_LCD_TAG));
+        cachedLocalFlight = flights.Count > 0 ? flights[0] : null;
+    }
+
+    IMyFlightMovementBlock localFlight = cachedLocalFlight;
 
     if (localFlight == null || localFlight.CurrentWaypoint == null)
         return false;

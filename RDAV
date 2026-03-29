@@ -51,7 +51,7 @@
   const bool UseDefaultTargeting = false; // set this to true to enable 'default' targeting subsystems by default
   const bool RenameCockpit = true; //Renames the cockpit the script uses to help  diagnose issues
   const int MissileLCD = 0; //LCD in the cockpit to use (keep this 0 unless you want it on a different screen)
-  const int GravityAggressiveness = 5; //Alter this (0.5 - 4) to change how aggressive gravity counteraction is, good for firing at ground targets.
+  int GravityAggressiveness = 5; //Auto-selected from PB tag: #A#=5, #B#=6, #C#=7, #D#=8
 
   bool Autoconnect = true;//Automatically connects missile connectors so its easier to use in survival
   bool OnlyUseBlocksOnSameConstruct = false; //Use this to force script to only use same construct blocks (ie ignore connector docked stuff)
@@ -1203,9 +1203,10 @@
       //Sets Runtime
       Runtime.UpdateFrequency = UpdateFrequency.Update1;
       ExternalTargetListener = IGC.RegisterBroadcastListener(ExternalTargetIgcChannel);
+      ApplyTagSettingsFromProgrammableBlockName();
 
       //Setup String
-      string SetupString = "Rdavs Guided Missile Script Basic Setup \n================================================== \n \n \nSystem Setup \n=================== \n \nTo Set Up The Ship: \n------------------------ \n- Put this Code Into a P-block \n- Install a light block (optional) \n- Install an Offensive combat block & Flight Block called #A#  \n- Recompile if prompted to 'reset' \n- To fire from the toolbar 'run' this Pb with \n  the argument 'Fire'";
+      string SetupString = "Rdavs Guided Missile Script Basic Setup \n================================================== \n \n \nSystem Setup \n=================== \n \nTo Set Up The Ship: \n------------------------ \n- Put this Code Into a P-block \n- Name this PB with #A#/#B#/#C#/#D# (auto tag + gravity profile)\n- Install a light block (optional) \n- Install an Offensive combat block & Flight Block with the same tag as this PB\n- Recompile if prompted to 'reset' \n- To fire from the toolbar 'run' this Pb with \n  the argument 'Fire'";
       Me.CustomData = SetupString;
 
       if (OnlyUseBlocksOnSameConstruct)
@@ -1317,6 +1318,34 @@
       ExternalSourceName = parts[13];
       ExternalFeedLastSeenTick = Runtime.LifetimeTicks;
       return true;
+  }
+
+  void ApplyTagSettingsFromProgrammableBlockName()
+  {
+      string blockName = Me != null ? Me.CustomName : "";
+      if (blockName == null)
+      { blockName = ""; }
+
+      if (blockName.IndexOf("#D#", StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+          MissileTag = "#D#";
+          GravityAggressiveness = 8;
+      }
+      else if (blockName.IndexOf("#C#", StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+          MissileTag = "#C#";
+          GravityAggressiveness = 7;
+      }
+      else if (blockName.IndexOf("#B#", StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+          MissileTag = "#B#";
+          GravityAggressiveness = 6;
+      }
+      else
+      {
+          MissileTag = "#A#";
+          GravityAggressiveness = 5;
+      }
   }
 
   bool TryApplyExternalTargetFromIgc()
@@ -1531,15 +1560,15 @@
           }
 
           //Adds Target (If Tracking)
-          if (HasTarget)
-          {
-              TrackingDisplay.TargetInfo targetInfo = new TrackingDisplay.TargetInfo();
-              targetInfo.RenderColour = Color.Red;
-              targetInfo.Location = TrackedTargetLocation;
-              targetInfo.Velocity = TrackedTargetVelocity * 30;
+              if (HasTarget)
+              {
+                  TrackingDisplay.TargetInfo targetInfo = new TrackingDisplay.TargetInfo();
+                  targetInfo.RenderColour = Color.Red;
+                  targetInfo.Location = TrackedTargetLocation;
+                  targetInfo.Velocity = TrackedTargetVelocity * 30;
 
-              runtimeAgs.ToDisplay.Add(targetInfo);
-          }
+                  runtimeAgs.ToDisplay.Add(targetInfo);
+              }
 
           GUIPanel.DrawGUI(runtimeAgs);
       }
