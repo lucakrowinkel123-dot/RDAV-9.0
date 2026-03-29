@@ -29,9 +29,21 @@ const string TARGET_PACKET_HEADER = "VTARGET";
 const string TARGET_PACKET_VERSION = "1";
 const string IGC_SCOUT_CHANNEL = "VETILE_SCOUT_TARGET";
 const string IGC_SCOUT_CONTROL_CHANNEL = "VETILE_SCOUT_CONTROL";
+const string IGC_RDAV_TARGET_CHANNEL = "VETILE_RDAV_TARGET";
+const bool ENABLE_LEGACY_DIRECT_RDAV_PUSH = false;
+const bool ENABLE_CONNECTOR_LOCKING = false; //Prefer RDAV autoconnect handling
 const double REMOTE_TARGET_STALE_SECONDS = 2.0;
 const string RDAV_STATUS_NONE = "NO_TARGET";
 const string SOURCE_ID_KEY = "SourceId";
+const int TARGET_UPDATE_EVERY_TICKS = 1; //Update target forwarding every N script ticks (1 = every run)
+const double TARGET_PREDICTION_SECONDS = 0.35; //Base linear lead time
+const double TARGET_PREDICTION_MIN_SECONDS = 0.15;
+const double TARGET_PREDICTION_MAX_SECONDS = 1.25;
+const double TARGET_PREDICTION_ASSUMED_MISSILE_SPEED_MPS = 220.0;
+const double TARGET_VELOCITY_SMOOTHING = 0.35; //0..1, higher = more responsive
+const int LOCAL_FLIGHT_LOOKUP_EVERY_TICKS = 10; //Only re-scan local flight block every N script ticks
+const int IDLE_CHANNEL_UPDATE_EVERY_TICKS = 10; //Only update stable idle channels every N script ticks
+const int ECHO_UPDATE_EVERY_TICKS = 10; //Reduce terminal string churn
 
 enum ControllerState
 {
@@ -132,6 +144,16 @@ double activeTargetDistanceMeters = -1;
 string configuredSourceId = "local";
 double remoteSettingBroadcastTimer;
 const double REMOTE_SETTING_BROADCAST_SECONDS = 1.0;
+int targetUpdateTickCounter;
+int localFlightLookupTickCounter;
+int idleChannelUpdateTickCounter;
+int echoUpdateTickCounter;
+bool hasLastResolvedTarget;
+Vector3D lastResolvedTargetPosition = Vector3D.Zero;
+Vector3D lastResolvedTargetVelocity = Vector3D.Zero;
+double lastResolvedTargetSeenAt = -9999;
+IMyFlightMovementBlock cachedLocalFlight;
+List<IMyFlightMovementBlock> localFlightLookupBuffer = new List<IMyFlightMovementBlock>();
 
 public Program()
 {
@@ -235,10 +257,30 @@ public void Main(string argument, UpdateType updateSource)
     }
 
     PollScoutMessages();
-    ResolveAndForwardTarget();
+    targetUpdateTickCounter++;
+    localFlightLookupTickCounter++;
+    idleChannelUpdateTickCounter++;
+    echoUpdateTickCounter++;
+    if (targetUpdateTickCounter >= Math.Max(1, TARGET_UPDATE_EVERY_TICKS))
+    {
+        targetUpdateTickCounter = 0;
+        ResolveAndForwardTarget();
+    }
 
     foreach (var kv in channels)
-        UpdateChannel(kv.Value);
+    {
+        bool shouldRun = true;
+        if (IsChannelStableIdle(kv.Value))
+        {
+            shouldRun = idleChannelUpdateTickCounter >= Math.Max(1, IDLE_CHANNEL_UPDATE_EVERY_TICKS);
+        }
+
+        if (shouldRun)
+            UpdateChannel(kv.Value);
+    }
+
+    if (idleChannelUpdateTickCounter >= Math.Max(1, IDLE_CHANNEL_UPDATE_EVERY_TICKS))
+        idleChannelUpdateTickCounter = 0;
 
     if (fireAllSequenceActive)
         ProcessFireAllSequence();
@@ -258,7 +300,11 @@ public void Main(string argument, UpdateType updateSource)
         AutoDetonateOutOfRangeWarheadsNextTag();
     }
 
-    EchoSummary();
+    if (echoUpdateTickCounter >= Math.Max(1, ECHO_UPDATE_EVERY_TICKS))
+    {
+        echoUpdateTickCounter = 0;
+        EchoSummary();
+    }
 
     summaryLcdTimer += Runtime.TimeSinceLastRun.TotalSeconds;
     if (summaryLcdTimer >= SUMMARY_LCD_UPDATE_SECONDS)
@@ -268,6 +314,15 @@ public void Main(string argument, UpdateType updateSource)
     }
 
     UpdateRuntimeFrequency();
+}
+
+bool IsChannelStableIdle(TagChannel ch)
+{
+    if (ch == null)
+        return false;
+    if (fireAllSequenceActive)
+        return false;
+    return ch.State == ControllerState.WaitingExact || ch.State == ControllerState.Parked;
 }
 
 void ForceStartAll()
@@ -864,8 +919,15 @@ void BeginParkingState(TagChannel ch)
 
     if (!ch.ConnectorAttemptDone)
     {
-        RefreshTaggedConnectors(ch);
-        ch.ConnectorConnectedOnAttempt = LockTaggedConnectors(ch);
+        if (ENABLE_CONNECTOR_LOCKING)
+        {
+            RefreshTaggedConnectors(ch);
+            ch.ConnectorConnectedOnAttempt = LockTaggedConnectors(ch);
+        }
+        else
+        {
+            ch.ConnectorConnectedOnAttempt = 0;
+        }
         ch.ConnectorAttemptDone = true;
     }
 }
@@ -1030,10 +1092,58 @@ void ResolveAndForwardTarget()
         packet = BuildNoTargetPacket();
     }
 
+    if (packet.HasTarget)
+    {
+        Vector3D measuredPosition = packet.TargetPosition;
+        Vector3D measuredVelocity = packet.TargetVelocity;
+        double dt = hasLastResolvedTarget ? (elapsedSeconds - lastResolvedTargetSeenAt) : 0;
+        if (measuredVelocity.LengthSquared() < 0.01 && hasLastResolvedTarget && dt > 0.001)
+        {
+            measuredVelocity = (measuredPosition - lastResolvedTargetPosition) / dt;
+        }
+
+        Vector3D smoothedVelocity = measuredVelocity;
+        if (hasLastResolvedTarget && dt > 0.001)
+        {
+            smoothedVelocity = lastResolvedTargetVelocity * (1.0 - TARGET_VELOCITY_SMOOTHING) + measuredVelocity * TARGET_VELOCITY_SMOOTHING;
+        }
+
+        Vector3D acceleration = Vector3D.Zero;
+        if (hasLastResolvedTarget && dt > 0.001)
+        {
+            acceleration = (smoothedVelocity - lastResolvedTargetVelocity) / dt;
+        }
+
+        double leadSeconds = TARGET_PREDICTION_SECONDS;
+        if (TARGET_PREDICTION_ASSUMED_MISSILE_SPEED_MPS > 1)
+        {
+            double sourceDistance = Vector3D.Distance(packet.SourcePosition, measuredPosition);
+            leadSeconds = sourceDistance / TARGET_PREDICTION_ASSUMED_MISSILE_SPEED_MPS;
+        }
+        leadSeconds = Math.Max(TARGET_PREDICTION_MIN_SECONDS, Math.Min(TARGET_PREDICTION_MAX_SECONDS, leadSeconds));
+
+        packet.TargetVelocity = smoothedVelocity;
+        packet.TargetPosition = measuredPosition + smoothedVelocity * leadSeconds + acceleration * (0.5 * leadSeconds * leadSeconds);
+        hasLastResolvedTarget = true;
+        lastResolvedTargetPosition = measuredPosition;
+        lastResolvedTargetVelocity = smoothedVelocity;
+        lastResolvedTargetSeenAt = elapsedSeconds;
+    }
+    else
+    {
+        hasLastResolvedTarget = false;
+        lastResolvedTargetVelocity = Vector3D.Zero;
+    }
+
     activeTargetPacket = packet;
     activeTargetDistanceMeters = packet.HasTarget ? Vector3D.Distance(Me.GetPosition(), packet.TargetPosition) : -1;
 
     string encoded = EncodeTargetPacket(packet);
+    IGC.SendBroadcastMessage(IGC_RDAV_TARGET_CHANNEL, encoded, TransmissionDistance.TransmissionDistanceMax);
+
+    if (!ENABLE_LEGACY_DIRECT_RDAV_PUSH)
+        return;
+
     for (int i = 0; i < TAGS.Length; i++)
     {
         var ch = channels[TAGS[i]];
@@ -1046,11 +1156,19 @@ bool TryGetLocalPacket(out TargetPacket packet)
 {
     packet = BuildNoTargetPacket();
 
-    IMyFlightMovementBlock localFlight = null;
-    var flights = new List<IMyFlightMovementBlock>();
-    GridTerminalSystem.GetBlocksOfType(flights, b => NameHasTag(b.CustomName, SUMMARY_LCD_TAG));
-    if (flights.Count > 0)
-        localFlight = flights[0];
+    bool localFlightInvalid = cachedLocalFlight == null || cachedLocalFlight.Closed || cachedLocalFlight.CubeGrid == null;
+    if (!localFlightInvalid && cachedLocalFlight.CubeGrid.GetCubeBlock(cachedLocalFlight.Position) == null)
+        localFlightInvalid = true;
+
+    if (localFlightInvalid || localFlightLookupTickCounter >= Math.Max(1, LOCAL_FLIGHT_LOOKUP_EVERY_TICKS))
+    {
+        localFlightLookupTickCounter = 0;
+        localFlightLookupBuffer.Clear();
+        GridTerminalSystem.GetBlocksOfType(localFlightLookupBuffer, b => NameHasTag(b.CustomName, SUMMARY_LCD_TAG));
+        cachedLocalFlight = localFlightLookupBuffer.Count > 0 ? localFlightLookupBuffer[0] : null;
+    }
+
+    IMyFlightMovementBlock localFlight = cachedLocalFlight;
 
     if (localFlight == null || localFlight.CurrentWaypoint == null)
         return false;
@@ -1385,6 +1503,7 @@ double NormalizeToMinusPiToPi(double radians)
 void EchoSummary()
 {
     Echo("Rotor Projection Finisher (Multi-Tag)");
+    Echo($"Runtime (Vetile): {Runtime.LastRunTimeMs:0.###} ms");
     Echo($"Target feed: {targetSourceMode} | source={activeTargetPacket.SourceName} | id={(activeTargetPacket.HasTarget ? activeTargetPacket.TargetId.ToString() : RDAV_STATUS_NONE)} | dist={(activeTargetDistanceMeters >= 0 ? activeTargetDistanceMeters.ToString("0") + "m" : "-")}");
     Echo($"Target profile: Priority={globalTargetMode} | System={globalTargetSubsystemMode}");
     Echo($"Remote selection: {(remoteSourceOrder.Count > 0 ? GetSelectedRemoteNameOrDefault() : "none")} ({remoteSourceOrder.Count} known)");
